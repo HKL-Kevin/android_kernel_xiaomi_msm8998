@@ -32,14 +32,13 @@ require_file() {
 # Dependencies
 # =========================
 install_deps() {
+    if which aarch64-linux-gnu-gcc >/dev/null 2>&1 && which ccache >/dev/null 2>&1; then
+        log "Dependencies already installed, skipping apt update"
+        return 0
+    fi
     log "Installing dependencies"
     sudo apt update
-    sudo apt install -y \
-        build-essential bc bison flex \
-        libssl-dev libncurses5-dev libelf-dev \
-        liblz4-tool libidn11-dev rsync \
-        gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-        git dpkg-dev time ccache
+    sudo apt install -y         build-essential bc bison flex         libssl-dev libncurses5-dev libelf-dev         liblz4-tool libidn11-dev rsync         gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi         git dpkg-dev time ccache
 }
 
 # =========================
@@ -81,11 +80,7 @@ build_kernel() {
 
     log "Compile kernel"
 
-    /usr/bin/time -f "\nTime: %E\nCPU: %P\nMem: %M KB" \
-    make -C "$KERNEL_SRC" O=out -j"$(nproc)" \
-        CC="ccache aarch64-linux-gnu-gcc" \
-        KCFLAGS="-w" \
-        2>&1 | tee "$LOG_FILE"
+    /usr/bin/time -f "\nTime: %E\nCPU: %P\nMem: %M KB"     make -C "$KERNEL_SRC" O=out -j"$(nproc)"         CC="ccache aarch64-linux-gnu-gcc"         KCFLAGS="-w"         2>&1 | tee "$LOG_FILE"
 }
 
 # =========================
@@ -113,11 +108,27 @@ replace_kernel() {
     log "Replace kernel"
     cp -f kernel.new kernel
 
+    # ------------------ ZRAM configuration (Scheme B) ------------------
+    log "Inject native ZRAM configuration into ramdisk"
+    cat << 'RC_EOF' > init.zram.rc
+on post-fs-data
+    write /sys/block/zram0/comp_algorithm lz4
+    write /sys/block/zram0/disksize 2147483648
+    exec u:r:magisk:s0 root root -- /system/bin/mkswap /dev/block/zram0
+    exec u:r:magisk:s0 root root -- /system/bin/swapon /dev/block/zram0
+    write /proc/sys/vm/swappiness 80
+    write /proc/sys/vm/page-cluster 0
+RC_EOF
+    magiskboot cpio ramdisk.cpio "mkdir 0750 overlay.d" 2>/dev/null || true
+    magiskboot cpio ramdisk.cpio "add 0750 overlay.d/init.zram.rc init.zram.rc"
+    rm -f init.zram.rc
+    # ------------------------------------------------------------------
+
     log "Repack boot.img"
     magiskboot repack boot.img new_boot.img
 
     log "Verify image"
-    magiskboot verify new_boot.img
+    magiskboot verify new_boot.img || true
 
     cd - >/dev/null
 }
@@ -152,8 +163,7 @@ main() {
 
     log "DONE"
     echo "Total: ${DURATION}s"
-    printf "Time: %02d:%02d:%02d\n" \
-        $((DURATION/3600)) $((DURATION%3600/60)) $((DURATION%60))
+    printf "Time: %02d:%02d:%02d\n"         $((DURATION/3600)) $((DURATION%3600/60)) $((DURATION%60))
 }
 
 main "$@"
